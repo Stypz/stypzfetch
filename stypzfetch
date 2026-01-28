@@ -1,0 +1,267 @@
+#!/usr/bin/env bash
+
+# Colors
+RESET='\033[0m'
+BOLD='\033[1m'
+CYAN='\033[0;36m'
+BLUE='\033[0;34m'
+GREEN='\033[0;32m'
+YELLOW='\033[0;33m'
+MAGENTA='\033[0;35m'
+RED='\033[0;31m'
+WHITE='\033[0;37m'
+
+# ASCII Art Logo
+print_logo() {
+    echo -e "${CYAN}${BOLD}"
+    cat << "EOF"
+   _____ __                   ______     __       __  
+  / ___// /___  ______  ____/ ____/__  / /______/ /_ 
+  \__ \/ __/ / / / __ \/_  / /_  / _ \/ __/ ___/ __ \
+ ___/ / /_/ /_/ / /_/ / / / __/ /  __/ /_/ /__/ / / /
+/____/\__/\__, / .___/ /_/_/    \___/\__/\___/_/ /_/ 
+         /____/_/                                     
+EOF
+    echo -e "${RESET}"
+}
+
+# Get system information
+get_os() {
+    if [ -f /etc/os-release ]; then
+        . /etc/os-release
+        # Use PRETTY_NAME if available, otherwise fall back to NAME and VERSION
+        if [ ! -z "$PRETTY_NAME" ]; then
+            echo "$PRETTY_NAME"
+        else
+            echo "$NAME $VERSION"
+        fi
+    elif [ -f /etc/lsb-release ]; then
+        . /etc/lsb-release
+        echo "$DISTRIB_DESCRIPTION"
+    else
+        echo "$(uname -s)"
+    fi
+}
+
+get_kernel() {
+    echo "$(uname -r)"
+}
+
+get_uptime() {
+    if [ -f /proc/uptime ]; then
+        uptime_seconds=$(cut -d. -f1 /proc/uptime)
+        days=$((uptime_seconds / 86400))
+        hours=$(((uptime_seconds % 86400) / 3600))
+        minutes=$(((uptime_seconds % 3600) / 60))
+        
+        uptime_str=""
+        [ $days -gt 0 ] && uptime_str="${days}d "
+        [ $hours -gt 0 ] && uptime_str="${uptime_str}${hours}h "
+        uptime_str="${uptime_str}${minutes}m"
+        echo "$uptime_str"
+    else
+        uptime | awk '{print $3}' | sed 's/,//'
+    fi
+}
+
+get_packages() {
+    if command -v dpkg &> /dev/null; then
+        echo "$(dpkg -l | grep -c ^ii) (dpkg)"
+    elif command -v rpm &> /dev/null; then
+        echo "$(rpm -qa | wc -l) (rpm)"
+    elif command -v pacman &> /dev/null; then
+        echo "$(pacman -Q | wc -l) (pacman)"
+    else
+        echo "Unknown"
+    fi
+}
+
+get_shell() {
+    echo "$SHELL"
+}
+
+get_cpu() {
+    if [ -f /proc/cpuinfo ]; then
+        # Try to get CPU model name
+        cpu=$(grep "model name" /proc/cpuinfo | head -n1 | cut -d: -f2 | sed 's/^[ \t]*//' | sed 's/[ \t]*$//')
+        
+        # If model name is "unknown" or empty, try to build a descriptive name
+        if [ -z "$cpu" ] || [ "$cpu" = "unknown" ]; then
+            vendor=$(grep "vendor_id" /proc/cpuinfo | head -n1 | cut -d: -f2 | sed 's/^[ \t]*//' | sed 's/[ \t]*$//')
+            family=$(grep "cpu family" /proc/cpuinfo | head -n1 | cut -d: -f2 | sed 's/^[ \t]*//' | sed 's/[ \t]*$//')
+            model=$(grep "^model[[:space:]]*:" /proc/cpuinfo | head -n1 | cut -d: -f2 | sed 's/^[ \t]*//' | sed 's/[ \t]*$//')
+            
+            if [ ! -z "$vendor" ]; then
+                cpu="$vendor"
+                [ ! -z "$family" ] && [ ! -z "$model" ] && cpu="$cpu Family $family Model $model"
+            else
+                # Try Hardware field (ARM devices)
+                cpu=$(grep -m1 "Hardware" /proc/cpuinfo | cut -d: -f2 | sed 's/^[ \t]*//')
+            fi
+        fi
+        
+        # If still empty, use generic info
+        if [ -z "$cpu" ]; then
+            cpu="Unknown CPU"
+        fi
+        
+        # Get number of cores
+        cores=$(grep -c "^processor" /proc/cpuinfo)
+        
+        echo "$cpu ($cores cores)"
+    else
+        echo "$(uname -p)"
+    fi
+}
+
+get_cpu_usage() {
+    # Get CPU usage percentage
+    if [ -f /proc/stat ]; then
+        # Read CPU stats twice with a small delay for accurate measurement
+        cpu1=$(grep "^cpu " /proc/stat | awk '{print ($2+$4)*100/($2+$4+$5)}')
+        sleep 0.1
+        cpu2=$(grep "^cpu " /proc/stat | awk '{print ($2+$4)*100/($2+$4+$5)}')
+        
+        # Average the two readings
+        usage=$(echo "scale=1; ($cpu1 + $cpu2) / 2" | bc 2>/dev/null)
+        
+        # Fallback if bc is not available
+        if [ -z "$usage" ]; then
+            usage=$(awk "BEGIN {printf \"%.1f\", ($cpu1 + $cpu2) / 2}")
+        fi
+        
+        echo "${usage}%"
+    else
+        echo "N/A"
+    fi
+}
+
+get_memory() {
+    if [ -f /proc/meminfo ]; then
+        total=$(grep MemTotal /proc/meminfo | awk '{print $2}')
+        available=$(grep MemAvailable /proc/meminfo | awk '{print $2}')
+        used=$((total - available))
+        
+        total_mb=$((total / 1024))
+        used_mb=$((used / 1024))
+        
+        # Calculate percentage
+        if [ $total -gt 0 ]; then
+            percentage=$((used * 100 / total))
+        else
+            percentage=0
+        fi
+        
+        echo "${used_mb}MB / ${total_mb}MB (${percentage}%)"
+    else
+        echo "Unknown"
+    fi
+}
+
+get_disk() {
+    df -h / | awk 'NR==2 {print $3 " / " $2 " (" $5 ")"}'
+}
+
+get_hostname() {
+    echo "$(whoami)@$(hostname)"
+}
+
+get_terminal() {
+    echo "${TERM:-Unknown}"
+}
+
+get_de_wm() {
+    if [ ! -z "$XDG_CURRENT_DESKTOP" ]; then
+        echo "$XDG_CURRENT_DESKTOP"
+    elif [ ! -z "$DESKTOP_SESSION" ]; then
+        echo "$DESKTOP_SESSION"
+    else
+        echo "TTY"
+    fi
+}
+
+get_user() {
+    echo "$(whoami)"
+}
+
+get_virtualization() {
+    virt="Bare Metal"
+    
+    # Check for Docker
+    if [ -f /.dockerenv ] || grep -q docker /proc/1/cgroup 2>/dev/null; then
+        virt="Docker"
+    # Check for LXC
+    elif grep -q lxc /proc/1/cgroup 2>/dev/null || [ -f /run/systemd/container ] && grep -q lxc /run/systemd/container 2>/dev/null; then
+        virt="LXC"
+    # Check systemd-detect-virt if available
+    elif command -v systemd-detect-virt &> /dev/null; then
+        detected=$(systemd-detect-virt 2>/dev/null)
+        if [ "$detected" != "none" ] && [ ! -z "$detected" ]; then
+            virt="$detected"
+        fi
+    # Check /proc/cpuinfo for hypervisor
+    elif grep -q "hypervisor" /proc/cpuinfo 2>/dev/null; then
+        # Try to determine which hypervisor
+        if grep -qi "vmware" /proc/cpuinfo /sys/class/dmi/id/* 2>/dev/null; then
+            virt="VMware"
+        elif grep -qi "virtualbox" /sys/class/dmi/id/* 2>/dev/null; then
+            virt="VirtualBox"
+        elif grep -qi "kvm" /proc/cpuinfo /sys/class/dmi/id/* 2>/dev/null; then
+            virt="KVM"
+        elif grep -qi "qemu" /proc/cpuinfo /sys/class/dmi/id/* 2>/dev/null; then
+            virt="QEMU"
+        elif grep -qi "xen" /proc/cpuinfo /sys/class/dmi/id/* 2>/dev/null; then
+            virt="Xen"
+        else
+            virt="Unknown VM"
+        fi
+    # Check dmesg for virtualization hints
+    elif dmesg 2>/dev/null | grep -qi "hypervisor\|vmware\|virtualbox\|kvm\|qemu\|xen"; then
+        if dmesg 2>/dev/null | grep -qi "kvm"; then
+            virt="KVM"
+        elif dmesg 2>/dev/null | grep -qi "qemu"; then
+            virt="QEMU"
+        elif dmesg 2>/dev/null | grep -qi "vmware"; then
+            virt="VMware"
+        elif dmesg 2>/dev/null | grep -qi "virtualbox"; then
+            virt="VirtualBox"
+        else
+            virt="Unknown VM"
+        fi
+    fi
+    
+    echo "$virt"
+}
+
+# Print info line
+print_info() {
+    local label="$1"
+    local value="$2"
+    local color="$3"
+    
+    printf "${color}${BOLD}%-12s${RESET} %s\n" "$label" "$value"
+}
+
+# Main
+print_logo
+
+echo -e "${BOLD}${GREEN}$(get_hostname)${RESET}"
+echo -e "${BLUE}━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━${RESET}"
+
+print_info "User" "$(get_user)" "$GREEN"
+print_info "OS" "$(get_os)" "$YELLOW"
+print_info "Kernel" "$(get_kernel)" "$YELLOW"
+print_info "Uptime" "$(get_uptime)" "$MAGENTA"
+print_info "Packages" "$(get_packages)" "$CYAN"
+print_info "Shell" "$(get_shell)" "$GREEN"
+print_info "DE/WM" "$(get_de_wm)" "$BLUE"
+print_info "Terminal" "$(get_terminal)" "$RED"
+print_info "Virt" "$(get_virtualization)" "$MAGENTA"
+print_info "CPU" "$(get_cpu)" "$CYAN"
+print_info "CPU Usage" "$(get_cpu_usage)" "$CYAN"
+print_info "Memory" "$(get_memory)" "$MAGENTA"
+print_info "Disk" "$(get_disk)" "$YELLOW"
+
+echo ""
+echo -e "${RED}█${GREEN}█${YELLOW}█${BLUE}█${MAGENTA}█${CYAN}█${WHITE}█${RESET}"
+echo ""
